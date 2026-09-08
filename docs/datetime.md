@@ -1,6 +1,6 @@
 # Datetime convention
 
-Shared rules for every capturable SQLite utility (tail-to-ticker, adsb-trip-journal, faa-registry-mirror, entra-tenant-recon, …). Implement in each repo; do not keep dual formats or “old vs new” branches in code.
+Shared rules for every capturable SQLite utility. Implement in each repo; do not keep dual formats or “old vs new” branches in code.
 
 ## SQLite
 
@@ -22,7 +22,7 @@ YYYY-MM-DD
 
 Example: `2026-09-01`
 
-Use for FAA/SEC as-of, SCD2 validity, OpenSky “yesterday UTC”, watch `utc_date`, cursor `last_ok_date`, fleet `snapshot_as_of`, registry ingest `as_of_date`, Entra `poll_runs.as_of_date`. Write-time instants (`fetched_at`, `recorded_at`, `refresh_run.recorded_at`, `ingest_runs.started_at` / `finished_at`, `poll_runs.started_at` / `finished_at`, `probes.probed_at`, Entra `domains_current.first_seen` / `last_seen`) are specified per project in `*-fact-timestamps.md` and [faa-registry-mirror-spec.md](faa-registry-mirror-spec.md) §4.
+Use for as-of days, SCD2 validity, and other calendar-day facts. Each utility names its own fact columns; this crate does not.
 
 **Instant** — a UTC timestamp at **second** resolution.
 
@@ -37,7 +37,7 @@ Example: `2026-09-01T21:19:58Z`
 - No fractional seconds
 - Separator is `T`
 
-Wire formats (OpenSky unix seconds, etc.) convert at the ingest boundary. Source resolution here is seconds; do not invent millis.
+Wire formats (unix seconds, RFC3339 with offset, …) convert at the ingest boundary. Source resolution here is seconds; do not invent millis.
 
 ## Invariants
 

@@ -94,14 +94,11 @@ pub fn assert_triggers(conn: &Connection, tables: &[TableSpec<'_>]) -> Result<()
                 }
             }
 
-            let expect_after = match (op, spec.mode) {
-                ("I" | "U", CaptureMode::Full | CaptureMode::After) => true,
-                _ => false,
-            };
-            let expect_before = match (op, spec.mode) {
-                ("U" | "D", CaptureMode::Full) => true,
-                _ => false,
-            };
+            let expect_after = matches!(
+                (op, spec.mode),
+                ("I" | "U", CaptureMode::Full | CaptureMode::After)
+            );
+            let expect_before = matches!((op, spec.mode), ("U" | "D", CaptureMode::Full));
 
             if expect_after {
                 for c in &payload {
