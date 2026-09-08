@@ -238,7 +238,7 @@ Each utility registers its database path and logical name — a small file in a 
 
 Announce env: `STATE_CAPTURE_ANNOUNCE_DIR` (default `/var/lib/state-capture/announce/{db_name}.json`). If that directory cannot be created, write `{sqlite_dir}/.capturable.json`. Nudge env: `STATE_CAPTURE_SOCK` (default `/run/state/collect.sock`). Announce and nudge must succeed as no-ops when the collector does not exist yet.
 
-**Watch the writable file.** Capture follows the work / in-place sqlite (`entra.sqlite`, `trips.sqlite`, `/var/lib/tail-to-ticker/work/current/…`, `/var/lib/faa-registry-mirror/work/…`). Published `current/` copies (`VACUUM INTO` / `mv`) include `_outbox` and triggers; the collector must not watch them. Read-only consumers never fire triggers. Never drop `_outbox` on publish.
+**Watch the writable file.** Capture follows the work / in-place sqlite (the file the utility mutates), not a published copy. Published `current/` copies (`VACUUM INTO` / `mv`) include `_outbox` and triggers; the collector must not watch them. Read-only consumers never fire triggers. Never drop `_outbox` on publish.
 
 ### One subtle safety property worth understanding
 
