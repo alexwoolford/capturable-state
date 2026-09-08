@@ -1,2 +1,30 @@
 /target
 /Cargo.lock
+
+# Secrets / local env (keep *.example tracked)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+secrets/
+
+# Test / local sqlite
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Local notes — never publish
+context/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.cursor/
+.idea/
+*.swp
+*~
