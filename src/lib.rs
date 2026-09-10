@@ -61,7 +61,7 @@ pub fn install(conn: &Connection, cfg: &CaptureConfig<'_>) -> Result<Nudge> {
     ensure_outbox(conn)?;
     install_triggers(conn, cfg.tables)?;
     assert_triggers(conn, cfg.tables)?;
-    let _ = announce(cfg.db_name, cfg.sqlite_path, cfg.announce_dir);
+    announce(cfg.db_name, cfg.sqlite_path, cfg.announce_dir)?;
     Ok(Nudge::new(cfg.db_name, cfg.sock))
 }
 
@@ -100,7 +100,10 @@ pub fn table_is_strict(conn: &Connection, table: &str) -> Result<bool> {
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    static ENV: Mutex<()> = Mutex::new(());
 
     fn cap_cfg<'a>(
         db_name: &'a str,
@@ -440,5 +443,137 @@ mod tests {
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))
             .unwrap();
         assert_eq!(mode.to_ascii_lowercase(), "wal");
+    }
+
+    #[test]
+    fn leftover_capture_triggers_are_dropped() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_mem();
+        conn.execute_batch(
+            "CREATE TABLE stay (id INTEGER PRIMARY KEY, v TEXT) STRICT;
+             CREATE TABLE gone (id INTEGER PRIMARY KEY, v TEXT) STRICT;",
+        )
+        .unwrap();
+        let db = dir.path().join("t.sqlite");
+        let both = [
+            TableSpec::new("stay", CaptureMode::After),
+            TableSpec::new("gone", CaptureMode::After),
+        ];
+        install(&conn, &cap_cfg("orphan-test", &db, &both, &dir)).unwrap();
+        conn.execute("INSERT INTO gone(id, v) VALUES (1, 'x')", [])
+            .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _outbox WHERE tbl = 'gone'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+
+        let stay_only = [TableSpec::new("stay", CaptureMode::After)];
+        install(&conn, &cap_cfg("orphan-test", &db, &stay_only, &dir)).unwrap();
+        conn.execute("INSERT INTO gone(id, v) VALUES (2, 'y')", [])
+            .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _outbox WHERE tbl = 'gone'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        conn.execute("INSERT INTO stay(id, v) VALUES (1, 'z')", [])
+            .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM _outbox WHERE tbl = 'stay'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn exclude_prefix_of_another_column_still_asserts() {
+        let dir = TempDir::new().unwrap();
+        let conn = open_mem();
+        conn.execute_batch(
+            "CREATE TABLE t (
+               id INTEGER PRIMARY KEY,
+               v TEXT,
+               valid_from TEXT
+             ) STRICT;",
+        )
+        .unwrap();
+        let tables = [TableSpec::new("t", CaptureMode::Full).exclude(&["v"])];
+        let db = dir.path().join("t.sqlite");
+        install(&conn, &cap_cfg("exclude-prefix", &db, &tables, &dir)).unwrap();
+        conn.execute(
+            "INSERT INTO t(id, v, valid_from) VALUES (1, 'secret', '2026-09-01')",
+            [],
+        )
+        .unwrap();
+        let after: String = conn
+            .query_row("SELECT after FROM _outbox", [], |r| r.get(0))
+            .unwrap();
+        assert!(after.contains("valid_from"));
+        assert!(after.contains("2026-09-01"));
+        assert!(!after.contains("secret"));
+        let obj: serde_json::Value = serde_json::from_str(&after).unwrap();
+        assert!(obj.get("v").is_none());
+    }
+
+    #[test]
+    fn ensure_outbox_rejects_non_autoincrement() {
+        let conn = open_mem();
+        conn.execute_batch(
+            "CREATE TABLE _outbox (
+               seq INTEGER PRIMARY KEY,
+               tbl TEXT NOT NULL,
+               op TEXT NOT NULL,
+               ts INTEGER NOT NULL,
+               key TEXT NOT NULL,
+               before TEXT,
+               after TEXT
+             ) STRICT;",
+        )
+        .unwrap();
+        let err = ensure_outbox(&conn).unwrap_err();
+        assert!(err.to_string().contains("AUTOINCREMENT"), "{err}");
+    }
+
+    #[test]
+    fn announce_skips_when_default_parent_cannot_be_created() {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = TempDir::new().unwrap();
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, b"x").unwrap();
+        let nested = blocker.join("announce");
+        let prev = std::env::var(ENV_ANNOUNCE_DIR).ok();
+        std::env::set_var(ENV_ANNOUNCE_DIR, &nested);
+        let sqlite = dir.path().join("t.sqlite");
+        std::fs::write(&sqlite, b"").unwrap();
+        let got = announce("skip-test", &sqlite, None).unwrap();
+        match prev {
+            Some(v) => std::env::set_var(ENV_ANNOUNCE_DIR, v),
+            None => std::env::remove_var(ENV_ANNOUNCE_DIR),
+        }
+        assert!(got.is_none());
+        assert!(!sqlite.parent().unwrap().join(".capturable.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn announce_fails_if_dir_exists_but_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let sqlite = dir.path().join("t.sqlite");
+        std::fs::write(&sqlite, b"").unwrap();
+        let ann = dir.path().join("announce");
+        std::fs::create_dir(&ann).unwrap();
+        let mut perms = std::fs::metadata(&ann).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&ann, perms).unwrap();
+        let err = announce("no-write", &sqlite, Some(&ann));
+        let mut restore = std::fs::metadata(&ann).unwrap().permissions();
+        restore.set_mode(0o755);
+        std::fs::set_permissions(&ann, restore).unwrap();
+        assert!(err.is_err(), "expected write failure, got {err:?}");
     }
 }
