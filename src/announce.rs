@@ -18,8 +18,16 @@ pub fn announce_path(db_name: &str) -> PathBuf {
     PathBuf::from(dir).join(format!("{db_name}.json"))
 }
 
-/// Write `{db_name, sqlite_path}`. Falls back to `{sqlite_dir}/.capturable.json`.
-pub fn announce(db_name: &str, sqlite_path: &Path, announce_dir: Option<&Path>) -> Result<PathBuf> {
+/// Write `{db_name, sqlite_path}` into the collector announce dir.
+///
+/// `Ok(None)` only when the default/env parent cannot be created (collector
+/// absent). An explicit `announce_dir`, or a dir that exists but is not
+/// writable, is an error. The collector never reads a sibling sidecar.
+pub fn announce(
+    db_name: &str,
+    sqlite_path: &Path,
+    announce_dir: Option<&Path>,
+) -> Result<Option<PathBuf>> {
     let abs = std::fs::canonicalize(sqlite_path)
         .unwrap_or_else(|_| sqlite_path.to_path_buf())
         .display()
@@ -28,22 +36,22 @@ pub fn announce(db_name: &str, sqlite_path: &Path, announce_dir: Option<&Path>) 
         db_name,
         sqlite_path: abs,
     })?;
+    let explicit = announce_dir.is_some();
     let primary = match announce_dir {
         Some(dir) => dir.join(format!("{db_name}.json")),
         None => announce_path(db_name),
     };
-    if let Some(parent) = primary.parent() {
-        if fs::create_dir_all(parent).is_ok() && fs::write(&primary, &body).is_ok() {
-            return Ok(primary);
+    let parent = primary.parent().unwrap_or_else(|| Path::new("."));
+    match fs::create_dir_all(parent) {
+        Ok(()) => {}
+        Err(_) if !explicit => {
+            // Parent path cannot be created (permissions, file in the way, …).
+            return Ok(None);
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("create announce dir {}", parent.display()));
         }
     }
-    let fallback = sqlite_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(".capturable.json");
-    if let Some(parent) = fallback.parent() {
-        fs::create_dir_all(parent).ok();
-    }
-    fs::write(&fallback, body).with_context(|| format!("write {}", fallback.display()))?;
-    Ok(fallback)
+    fs::write(&primary, &body).with_context(|| format!("write {}", primary.display()))?;
+    Ok(Some(primary))
 }

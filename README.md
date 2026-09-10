@@ -18,7 +18,7 @@ Spec: [docs/design-principles.md](docs/design-principles.md). Clocks: [docs/date
 Each utility is its own repo. Pin a tag. Do **not** `path = "../capturable-state"`.
 
 ```toml
-capturable-state = { git = "https://github.com/alexwoolford/capturable-state", tag = "v0.1.0" }
+capturable-state = { git = "https://github.com/alexwoolford/capturable-state", tag = "v0.1.1" }
 ```
 
 ```rust
@@ -39,16 +39,14 @@ let nudge = install(
 nudge.send(); // ignore-all-errors; collector may be down
 ```
 
-Announce and nudge are no-ops when the collector is absent. A utility must stay useful with only its own SQLite file.
+Announce and nudge are no-ops when the collector is absent (default announce parent cannot be created; datagram `ECONNREFUSED`). A utility must stay useful with only its own SQLite file. If the announce directory exists but is not writable, `install` fails — the collector never reads a sibling `.capturable.json`.
 
 Env:
 
 - `STATE_CAPTURE_ANNOUNCE_DIR` — default `/var/lib/state-capture/announce`
 - `STATE_CAPTURE_SOCK` — default `/run/state/collect.sock`
 
-If the announce dir cannot be created, the crate writes `{sqlite_dir}/.capturable.json`.
-
-The collector watches the **writable** sqlite (work / in-place journal), never a published `current/` snapshot.
+The collector watches the **writable** sqlite (work / in-place journal), never a published `current/` snapshot. `install` drops leftover `_cap_*` triggers whose table is no longer in the capture set.
 
 ## Clocks (P5)
 

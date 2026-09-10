@@ -139,7 +139,7 @@ k TEXT GENERATED ALWAYS AS (a || ':' || b) VIRTUAL
 Each utility is its own git repo. Pin this crate by **git tag** (crates.io later). Do **not** path-depend a sibling checkout (`path = "../capturable-state"`). That only builds if someone clones a parent folder of unrelated projects.
 
 ```toml
-capturable-state = { git = "https://github.com/alexwoolford/capturable-state", tag = "v0.1.0" }
+capturable-state = { git = "https://github.com/alexwoolford/capturable-state", tag = "v0.1.1" }
 ```
 
 ```rust
@@ -197,9 +197,11 @@ The generator reads `PRAGMA table_info(t)` and emits three triggers per table. R
 - **Don't blindly emit `NEW.rowid`** — it's rejected on `WITHOUT ROWID` tables (`no such column: NEW.rowid`) **\[verified\]**. Branch on whether a PK is declared.  
 - **Capture is opt-in per table.** Static lookup tables don't need it. Take a list, not "everything".  
 - **Support a column exclusion list** for large blobs, derived caches, and secrets.  
-- **Support capture modes** per table: `full` (before+after), `after` (inserts/updates only), `key` (identity only). Chatty or wide tables should not default to full.
+- **Support capture modes** per table: `full` (before+after), `after` (inserts/updates only), `key` (identity only). Chatty or wide tables should not default to full.  
+- **Drop leftover `_cap_*` triggers** whose table is not in the current capture set. Removing a table from the list must stop emitting, without each utility listing retired names.  
+- **`json_object` argument limits** (~50–60 columns at default SQLite caps). Current utilities are under that (FAA `aircraft` is ~37 payload columns). Do not rewrite payloads until a table actually hits the ceiling.
 
-Triggers do exactly one thing: write to `_outbox`. A trigger with any other side effect makes the feed a liar.
+Triggers do exactly one thing: write to `_outbox`. A trigger with any other side effect makes the feed a liar. The startup assertion looks for quoted `NEW."col"` / `OLD."col"` so an excluded `v` is not confused with `valid_from`.
 
 ---
 
@@ -236,7 +238,7 @@ Ignore all errors — `ECONNREFUSED` when the collector is down is normal. Send 
 
 Each utility registers its database path and logical name — a small file in a known directory, or the first datagram on startup. Avoid making the collector glob the filesystem; utilities know where their own state is.
 
-Announce env: `STATE_CAPTURE_ANNOUNCE_DIR` (default `/var/lib/state-capture/announce/{db_name}.json`). If that directory cannot be created, write `{sqlite_dir}/.capturable.json`. Nudge env: `STATE_CAPTURE_SOCK` (default `/run/state/collect.sock`). Announce and nudge must succeed as no-ops when the collector does not exist yet.
+Announce env: `STATE_CAPTURE_ANNOUNCE_DIR` (default `/var/lib/state-capture/announce/{db_name}.json`). If that directory cannot be created, skip announce (`install` still succeeds — collector absent). If the directory exists but is not writable, `install` fails: the collector only reads that dir, not a sibling `.capturable.json`. Nudge env: `STATE_CAPTURE_SOCK` (default `/run/state/collect.sock`). Nudge send errors (`ECONNREFUSED`) stay ignored.
 
 **Watch the writable file.** Capture follows the work / in-place sqlite (the file the utility mutates), not a published copy. Published `current/` copies (`VACUUM INTO` / `mv`) include `_outbox` and triggers; the collector must not watch them. Read-only consumers never fire triggers. Never drop `_outbox` on publish.
 

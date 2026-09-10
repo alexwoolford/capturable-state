@@ -1,7 +1,9 @@
+use std::collections::HashSet;
+
 use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
-const OUTBOX: &str = "_outbox";
+use crate::outbox::OUTBOX_TABLE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureMode {
@@ -43,13 +45,16 @@ struct Col {
 
 pub fn install_triggers(conn: &Connection, tables: &[TableSpec<'_>]) -> Result<()> {
     for spec in tables {
-        if spec.name == OUTBOX {
-            bail!("refusing to capture {OUTBOX}");
+        if spec.name == OUTBOX_TABLE {
+            bail!("refusing to capture {OUTBOX_TABLE}");
         }
         validate_ident(spec.name)?;
         for c in spec.exclude {
             validate_ident(c)?;
         }
+    }
+    drop_orphan_capture_triggers(conn, tables)?;
+    for spec in tables {
         let cols = table_columns(conn, spec.name)?;
         if cols.is_empty() {
             bail!("table {} has no columns (missing?)", spec.name);
@@ -102,17 +107,15 @@ pub fn assert_triggers(conn: &Connection, tables: &[TableSpec<'_>]) -> Result<()
 
             if expect_after {
                 for c in &payload {
-                    if !sql.contains(&format!("NEW.\"{c}\"")) && !sql.contains(&format!("NEW.{c}"))
-                    {
-                        bail!("trigger {name} missing NEW.{c}; regenerate after schema change");
+                    if !sql.contains(&format!("NEW.\"{c}\"")) {
+                        bail!("trigger {name} missing NEW.\"{c}\"; regenerate after schema change");
                     }
                 }
             }
             if expect_before {
                 for c in &payload {
-                    if !sql.contains(&format!("OLD.\"{c}\"")) && !sql.contains(&format!("OLD.{c}"))
-                    {
-                        bail!("trigger {name} missing OLD.{c}; regenerate after schema change");
+                    if !sql.contains(&format!("OLD.\"{c}\"")) {
+                        bail!("trigger {name} missing OLD.\"{c}\"; regenerate after schema change");
                     }
                 }
             }
@@ -121,7 +124,8 @@ pub fn assert_triggers(conn: &Connection, tables: &[TableSpec<'_>]) -> Result<()
                 if key_names.iter().any(|k| k == ex) {
                     continue;
                 }
-                if sql.contains(&format!("NEW.\"{ex}\"")) || sql.contains(&format!("NEW.{ex}")) {
+                if sql.contains(&format!("NEW.\"{ex}\"")) || sql.contains(&format!("OLD.\"{ex}\""))
+                {
                     bail!("trigger {name} still captures excluded column {ex}");
                 }
             }
@@ -183,12 +187,40 @@ END;
         ti = trigger_name("I", t),
         tu = trigger_name("U", t),
         td = trigger_name("D", t),
-        out = OUTBOX,
+        out = OUTBOX_TABLE,
     ))
 }
 
 fn trigger_name(op: &str, table: &str) -> String {
     format!("_cap_{op}_{table}")
+}
+
+fn capture_trigger_table(name: &str) -> Option<&str> {
+    name.strip_prefix("_cap_I_")
+        .or_else(|| name.strip_prefix("_cap_U_"))
+        .or_else(|| name.strip_prefix("_cap_D_"))
+}
+
+fn drop_orphan_capture_triggers(conn: &Connection, tables: &[TableSpec<'_>]) -> Result<()> {
+    let keep: HashSet<&str> = tables.iter().map(|t| t.name).collect();
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name GLOB '_cap_*'")
+        .context("list capture triggers")?;
+    let names: Vec<String> = stmt
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(stmt);
+    for name in names {
+        let stale = match capture_trigger_table(&name) {
+            Some(table) => !keep.contains(table),
+            None => true,
+        };
+        if stale {
+            conn.execute(&format!("DROP TRIGGER IF EXISTS \"{name}\""), [])
+                .with_context(|| format!("drop orphan {name}"))?;
+        }
+    }
+    Ok(())
 }
 
 fn drop_capture_triggers(conn: &Connection, table: &str) -> Result<()> {
